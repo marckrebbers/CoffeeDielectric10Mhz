@@ -1,0 +1,125 @@
+import libm2k
+import numpy as np
+import matplotlib.pyplot as plt
+import scipy.signal
+
+# Sweep-Parameter
+f_start = 10_000         # 10 kHz
+f_stop = 10_000_000      # 10 MHz
+n_steps = 150
+amplitude = 1.0
+sample_rate = 20e6       # Höherer Wert für hohe Frequenzen
+n_samples = 4000
+
+frequencies = np.logspace(np.log10(f_start), np.log10(f_stop), n_steps)
+
+def messreihe(label):
+    print(f"Starte Messung: {label}")
+    amplitudes = []
+
+    for f in frequencies:
+        gen.setFrequency(0, f)
+        ctx.sync()
+        samples = osc.getSamples(0, n_samples)
+        voltage = np.array(samples)
+        peak_to_peak = np.max(voltage) - np.min(voltage)
+        amplitudes.append(peak_to_peak)
+
+    return np.array(amplitudes)
+
+def find_extrema(data):
+    # Maxima
+    peaks, _ = scipy.signal.find_peaks(data)
+    # Minima (invertierte Peaks)
+    troughs, _ = scipy.signal.find_peaks(-data)
+    # Zusammenführen & sortieren
+    extrema = np.sort(np.concatenate((peaks, troughs)))
+    return extrema
+
+# Verbindung aufbauen
+ctx = libm2k.m2kOpen()
+if ctx is None:
+    raise Exception("ADALM2000 nicht verbunden.")
+ctx.calibrateADC()
+
+gen = ctx.getAnalogOut()
+osc = ctx.getAnalogIn()
+ctx.setTimeout(2.0)
+
+gen.enableChannel(0, True)
+gen.setSampleRate(0, sample_rate)
+gen.setChannelMode(0, libm2k.ANALOG_OUT_SINE)
+gen.setAmplitude(0, amplitude)
+
+osc.enableChannel(0, True)
+osc.setSampleRate(sample_rate)
+osc.setRange(0, 2.5)
+
+# --- Messung 1: Leermessung (nur Luft)
+input("Bitte LEEREN Kondensator einlegen und Enter drücken...")
+leer_amplituden = messreihe("Leer")
+
+# --- Messung 2: Befüllt mit Kaffeepulver
+input("Jetzt Kaffeepulver einfüllen und Enter drücken...")
+kaffee_amplituden = messreihe("Kaffee")
+
+# --- Aufräumen
+gen.enableChannel(0, False)
+ctx.close()
+
+# --- Analyse Hauptresonanzen
+res_index_leer = np.argmax(leer_amplituden)
+res_index_kaffee = np.argmax(kaffee_amplituden)
+
+f_res_leer = frequencies[res_index_leer]
+f_res_kaffee = frequencies[res_index_kaffee]
+
+# Berechnung bei bekannter Induktivität
+L = 1e-3  # 1 mH
+C_leer = 1 / ((2 * np.pi * f_res_leer)**2 * L)
+C_kaffee = 1 / ((2 * np.pi * f_res_kaffee)**2 * L)
+
+print("\n--- Ergebnisse Hauptresonanz ---")
+print(f"Resonanz leer:    {f_res_leer/1000:.1f} kHz → C = {C_leer*1e12:.2f} pF")
+print(f"Resonanz Kaffee:  {f_res_kaffee/1000:.1f} kHz → C = {C_kaffee*1e12:.2f} pF")
+print(f"ΔC = {(C_kaffee - C_leer)*1e12:.2f} pF")
+
+epsilon_r_main = C_kaffee / C_leer
+print(f"Relative Dielektrizitätszahl (εr) Hauptresonanz: {epsilon_r_main:.3f}")
+
+# --- Analyse aller signifikanten Extrema
+extrema_leer = find_extrema(leer_amplituden)
+extrema_kaffee = find_extrema(kaffee_amplituden)
+
+print("\n--- Signifikante Punkte (Minima/Maxima) ---")
+print(f"{'Freq(Hz)':>10} | {'C Leer (pF)':>12} | {'C Kaffee (pF)':>14} | {'εr':>6}")
+
+# Nutze nur so viele Paare, wie beide Listen gemeinsam haben
+anzahl_punkte = min(len(extrema_leer), len(extrema_kaffee))
+
+for i in range(anzahl_punkte):
+    idx_l = extrema_leer[i]
+    idx_k = extrema_kaffee[i]
+    
+    f_l = frequencies[idx_l]
+    f_k = frequencies[idx_k]
+    
+    C_l = 1 / ((2 * np.pi * f_l)**2 * L)
+    C_k = 1 / ((2 * np.pi * f_k)**2 * L)
+    epsilon_r = C_k / C_l
+    
+    print(f"{f_l:10.0f} | {C_l*1e12:12.2f} | {C_k*1e12:14.2f} | {epsilon_r:6.3f}")
+
+# --- Plot
+plt.figure(figsize=(10,6))
+plt.semilogx(frequencies, leer_amplituden, label='Leer (Luft)', color='blue')
+plt.semilogx(frequencies, kaffee_amplituden, label='Kaffee', color='green')
+plt.axvline(f_res_leer, color='blue', linestyle='--')
+plt.axvline(f_res_kaffee, color='green', linestyle='--')
+plt.xlabel("Frequenz (Hz)")
+plt.ylabel("Amplitude (Vpp)")
+plt.title("Frequenzgang – Leermessung vs. Kaffee")
+plt.legend()
+plt.grid(True, which='both', ls=':')
+plt.tight_layout()
+plt.show()
